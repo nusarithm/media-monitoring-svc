@@ -6,6 +6,7 @@ from app.api.news import router as news_router
 from app.api.keywords import router as keywords_router
 from app.api.analytics import router as analytics_router
 from app.api.settings import router as settings_router
+from app.api.subscription import router as subscription_router
 from app.core.config import settings
 import traceback
 
@@ -74,6 +75,7 @@ app.include_router(news_router)
 app.include_router(keywords_router)
 app.include_router(analytics_router)
 app.include_router(settings_router)
+app.include_router(subscription_router)
 
 
 if __name__ == "__main__":
