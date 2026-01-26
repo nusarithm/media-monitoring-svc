@@ -115,16 +115,20 @@ async def search_news(
             # Default: 7 days ago
             date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         
+        # change date string to timestamp seconds
+        date_from_stamp = int(datetime.strptime(date_from, "%Y-%m-%d").timestamp())
+        date_to_stamp = int(datetime.strptime(date_to, "%Y-%m-%d").timestamp()) if date_to else int(datetime.now().timestamp())
+        
         if not date_to:
             # Default: today
             date_to = datetime.now().strftime("%Y-%m-%d")
         
-        # Use extracted_at for date filtering (it's a date type)
+        # Use publish_date_timestamp for date filtering (it's a date type)
         filter_clauses.append({
             "range": {
-                "extracted_at": {
-                    "gte": date_from,
-                    "lte": date_to,
+                "publish_date_timestamp": {
+                    "gte": date_from_stamp,
+                    "lte": date_to_stamp,
                     "format": "yyyy-MM-dd"
                 }
             }
@@ -191,7 +195,7 @@ async def search_news(
                 "bool": query_body
             },
             "sort": [
-                {"extracted_at": {"order": "desc"}}
+                {"publish_date_timestamp": {"order": "desc"}}
             ],
             "from": from_index,
             "size": filters.page_size
