@@ -8,6 +8,8 @@ from app.api.analytics import router as analytics_router
 from app.api.analytics_v2 import router as analytics_v2_router
 from app.api.settings import router as settings_router
 from app.api.subscription import router as subscription_router
+from app.api.email import router as email_router
+from app.api.payment import router as payment_router
 from app.core.config import settings
 import traceback
 
@@ -78,6 +80,8 @@ app.include_router(analytics_router)
 app.include_router(analytics_v2_router)
 app.include_router(settings_router)
 app.include_router(subscription_router)
+app.include_router(email_router)
+app.include_router(payment_router)
 
 
 if __name__ == "__main__":
