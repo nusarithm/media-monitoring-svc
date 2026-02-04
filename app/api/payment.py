@@ -18,7 +18,6 @@ class PaymentRequest(BaseModel):
 @router.post("/create")
 async def create_payment(
     payment_data: Dict[str, Any],
-    current_user: dict = Depends(get_current_user)
 ):
     """
     Create payment via Saweria backend
