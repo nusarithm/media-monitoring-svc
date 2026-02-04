@@ -81,7 +81,7 @@ app.include_router(analytics_v2_router)
 app.include_router(settings_router)
 app.include_router(subscription_router)
 app.include_router(email_router)
-app.include_router(payment_router)
+app.include_router(payment_router, prefix="/api/payment")
 
 
 if __name__ == "__main__":

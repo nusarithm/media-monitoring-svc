@@ -37,7 +37,7 @@ async def create_payment(
                 timeout=30.0
             )
             
-            if response.status_code != 200:
+            if response.status_code != 201:
                 error_detail = response.text
                 raise HTTPException(
                     status_code=response.status_code,
@@ -61,6 +61,8 @@ async def create_payment(
             detail={"error": "Payment gateway error", "message": str(e)}
         )
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
             detail={"error": "Internal server error", "message": str(e)}
