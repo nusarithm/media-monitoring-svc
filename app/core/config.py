@@ -1,13 +1,15 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import List
 
 
 class Settings(BaseSettings):
-    # Supabase Configuration
-    SUPABASE_URL: str
-    SUPABASE_KEY: str
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
-    
+    # PostgreSQL Configuration
+    DATABASE_URL: str
+    DB_POOL_MIN_SIZE: int = 1
+    DB_POOL_MAX_SIZE: int = 10
+    DB_COMMAND_TIMEOUT: int = 30
+
     # JWT Configuration
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
@@ -37,11 +39,18 @@ class Settings(BaseSettings):
     APP_NAME: str = "Media Monitoring Service"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
-    
+
+    # CORS - comma separated list of allowed browser origins
+    CORS_ORIGINS: str = "https://monitor.nusarithm.id"
+
+    @property
+    def cors_origins(self) -> List[str]:
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
+
     # Elasticsearch Configuration
-    ELASTICSEARCH_HOST: str = "http://192.168.8.141:9200"
-    ELASTICSEARCH_USERNAME: str = "elastic"
-    ELASTICSEARCH_PASSWORD: str = "UtyCantik12"
+    ELASTICSEARCH_HOST: str
+    ELASTICSEARCH_USERNAME: str
+    ELASTICSEARCH_PASSWORD: str
     ELASTICSEARCH_INDEX: str = "online-news-*"
 
     class Config:

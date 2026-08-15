@@ -1,86 +1,64 @@
-"""Cleanup test users and related data from Supabase using service role key.
+"""Cleanup test users and related data from PostgreSQL.
+
+otp_codes and user_keywords go away via ON DELETE CASCADE, so only users and
+their workspaces need explicit deletes.
 
 Usage: python scripts/cleanup_test_users.py
 """
-from app.core.database import get_supabase_service_role
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from app.core.database import init_pool, close_pool, fetch_all, execute
 
 # List of explicit emails to remove
-TARGET_EMAILS = {
+TARGET_EMAILS = [
     "nasriblog12@gmail.com",
     "regtest-sha@example.com",
     "regtest1@example.com",
     "regtest2@example.com",
     "regtest3@example.com",
-}
+]
 
 # Remove any user with email starting with 'regtest'
-PREFIXES = ("regtest",)
+PREFIXES = ["regtest"]
 
 
-def main():
-    sup = get_supabase_service_role()
+async def main():
+    await init_pool()
+    try:
+        to_delete = await fetch_all(
+            """
+            SELECT id, email, workspace_id FROM users
+             WHERE lower(email) = ANY($1) OR lower(email) LIKE ANY($2)
+            """,
+            [e.lower() for e in TARGET_EMAILS],
+            [f"{p}%" for p in PREFIXES],
+        )
 
-    users_res = sup.table("users").select("*").execute()
-    users = users_res.data or []
+        if not to_delete:
+            print("No test users found to delete.")
+            return
 
-    to_delete = []
-    for u in users:
-        email = (u.get("email") or "").lower()
-        if email in TARGET_EMAILS or any(email.startswith(p) for p in PREFIXES):
-            to_delete.append(u)
+        print(f"Found {len(to_delete)} test users to delete")
 
-    if not to_delete:
-        print("No test users found to delete.")
-        return
+        user_ids = [u["id"] for u in to_delete]
+        workspace_ids = [u["workspace_id"] for u in to_delete if u["workspace_id"]]
 
-    print(f"Found {len(to_delete)} test users to delete")
+        for u in to_delete:
+            print(f"-- Deleting user {u['email']} (id={u['id']})")
 
-    for u in to_delete:
-        uid = u.get("id")
-        email = u.get("email")
-        print(f"-- Deleting user {email} (id={uid})")
+        print(await execute("DELETE FROM users WHERE id = ANY($1)", user_ids))
 
-        # Delete OTPs
-        try:
-            sup.table("otp_codes").delete().eq("user_id", uid).execute()
-            print("   - deleted otp_codes")
-        except Exception as e:
-            print("   - failed to delete otp_codes:", e)
+        if workspace_ids:
+            print(await execute("DELETE FROM workspace WHERE id = ANY($1)", workspace_ids))
 
-        # Delete keywords created by user
-        try:
-            sup.table("keywords").delete().eq("created_by", uid).execute()
-            print("   - deleted keywords")
-        except Exception as e:
-            print("   - failed to delete keywords:", e)
-
-        # Delete refresh tokens referencing user's sessions
-        try:
-            sup.table("refresh_tokens").delete().eq("user_id", uid).execute()
-            print("   - deleted refresh_tokens")
-        except Exception:
-            pass
-
-        # Remove user entry
-        try:
-            sup.table("users").delete().eq("id", uid).execute()
-            print("   - deleted user row")
-        except Exception as e:
-            print("   - failed to delete user:", e)
-
-        # If workspace exists, attempt to delete workspace and dependent rows
-        wid = u.get("workspace_id")
-        if wid:
-            try:
-                sup.table("keywords").delete().eq("workspace_id", wid).execute()
-                sup.table("monitoring_cache").delete().eq("workspace_id", wid).execute()
-                sup.table("workspace").delete().eq("id", wid).execute()
-                print(f"   - deleted workspace {wid} and related rows")
-            except Exception as e:
-                print("   - failed to delete workspace or related rows:", e)
-
-    print("Cleanup completed.")
+        print("Cleanup completed.")
+    finally:
+        await close_pool()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

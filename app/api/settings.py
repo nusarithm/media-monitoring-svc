@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, status, Depends
 from app.models.settings import ProfileUpdate, UserCreate, UserResponse
-from app.core.database import SupabaseServiceClient
+from app.core.database import fetch_one, fetch_all
 from app.core.security import get_password_hash
 from app.api.dependencies import get_current_active_user
 
@@ -17,49 +17,44 @@ async def update_profile(
     Update user profile
     """
     try:
-        supabase = SupabaseServiceClient.get_client()
         user_id = current_user["id"]
-        
-        # Build update data
-        update_data = {}
-        if profile_data.name is not None:
-            update_data["name"] = profile_data.name
-        if profile_data.email is not None:
-            # Check if email already exists
-            existing = supabase.table("users")\
-                .select("id")\
-                .eq("email", profile_data.email)\
-                .neq("id", user_id)\
-                .execute()
-            
-            if existing.data and len(existing.data) > 0:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Email already registered"
-                )
-            
-            update_data["email"] = profile_data.email
-        
-        if not update_data:
+
+        if profile_data.name is None and profile_data.email is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No data to update"
             )
-        
-        # Update user
-        result = supabase.table("users")\
-            .update(update_data)\
-            .eq("id", user_id)\
-            .execute()
-        
-        if not result.data or len(result.data) == 0:
+
+        if profile_data.email is not None:
+            # Check if email is taken by someone else
+            existing = await fetch_one(
+                "SELECT id FROM users WHERE email = $1 AND id <> $2",
+                profile_data.email, user_id
+            )
+            if existing is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered"
+                )
+
+        # NULL arguments leave the column untouched
+        user_data = await fetch_one(
+            """
+            UPDATE users
+               SET name = COALESCE($2, name),
+                   email = COALESCE($3, email)
+             WHERE id = $1
+            RETURNING *
+            """,
+            user_id, profile_data.name, profile_data.email
+        )
+
+        if user_data is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
-        user_data = result.data[0]
-        
+
         return UserResponse(
             id=user_data["id"],
             name=user_data.get("name"),
@@ -88,49 +83,38 @@ async def create_workspace_user(
     Create a new user in the same workspace
     """
     try:
-        supabase = SupabaseServiceClient.get_client()
-        
         # Get current user's workspace
         workspace_id = current_user.get("workspace_id")
-        
+
         # Check if email already exists
-        existing = supabase.table("users")\
-            .select("id")\
-            .eq("email", user_data.email)\
-            .execute()
-        
-        if existing.data and len(existing.data) > 0:
+        existing = await fetch_one(
+            "SELECT id FROM users WHERE email = $1", user_data.email
+        )
+        if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
             )
-        
+
         # Hash password
         hashed_password = get_password_hash(user_data.password)
-        
-        # Create user
-        new_user = {
-            "name": user_data.name,
-            "email": user_data.email,
-            "password": hashed_password,
-            "workspace_id": workspace_id,
-            "role_id": user_data.role_id,
-            "is_active": True,
-            "email_verified": False
-        }
-        
-        result = supabase.table("users")\
-            .insert(new_user)\
-            .execute()
-        
-        if not result.data or len(result.data) == 0:
+
+        user_created = await fetch_one(
+            """
+            INSERT INTO users (name, email, password, workspace_id, role_id, is_active, email_verified)
+            VALUES ($1, $2, $3, $4, $5, TRUE, FALSE)
+            RETURNING *
+            """,
+            user_data.name, user_data.email, hashed_password,
+            workspace_id, user_data.role_id
+        )
+
+        if user_created is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to create user"
             )
-        
-        user_created = result.data[0]
-        
+
         return UserResponse(
             id=user_created["id"],
             name=user_created.get("name"),
@@ -161,20 +145,23 @@ async def get_workspace_users(
     Get all users in the same workspace
     """
     try:
-        supabase = SupabaseServiceClient.get_client()
         workspace_id = current_user.get("workspace_id")
-        
+
         if not workspace_id:
             return []
-        
-        result = supabase.table("users")\
-            .select("id, name, email, is_active, created_at, workspace_id, role_id")\
-            .eq("workspace_id", workspace_id)\
-            .order("created_at", desc=True)\
-            .execute()
-        
+
+        rows = await fetch_all(
+            """
+            SELECT id, name, email, is_active, created_at, workspace_id, role_id
+              FROM users
+             WHERE workspace_id = $1
+             ORDER BY created_at DESC
+            """,
+            workspace_id
+        )
+
         users = []
-        for user in result.data:
+        for user in rows:
             users.append(UserResponse(
                 id=user["id"],
                 name=user.get("name"),

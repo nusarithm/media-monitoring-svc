@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
+from datetime import datetime
 
 
 class ProfileUpdate(BaseModel):
@@ -22,6 +23,6 @@ class UserResponse(BaseModel):
     name: Optional[str]
     email: str
     is_active: bool
-    created_at: str
+    created_at: datetime
     workspace_id: Optional[int]
     role_id: Optional[int]

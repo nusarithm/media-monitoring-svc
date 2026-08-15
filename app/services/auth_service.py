@@ -1,6 +1,5 @@
 from typing import Optional, Dict, Any
-from datetime import datetime
-from app.core.database import get_supabase
+from app.core.database import fetch_one, execute, get_pool
 from app.core.security import verify_password, get_password_hash
 from app.core.jwt import create_access_token, create_refresh_token, decode_token
 from app.models.user import UserCreate, UserInDB, UserLogin
@@ -13,93 +12,53 @@ from fastapi import HTTPException, status
 class AuthService:
     @staticmethod
     async def get_user_by_email(email: str) -> Optional[Dict[str, Any]]:
-        """Get user by email (use service role client to ensure server-side access)."""
-        from app.core.database import get_supabase_service_role
-        supabase = get_supabase_service_role()
-        result = supabase.table("users").select("*").eq("email", email).execute()
-        return result.data[0] if result.data else None
-    
+        """Get user by email"""
+        return await fetch_one("SELECT * FROM users WHERE email = $1", email)
+
     @staticmethod
     async def get_user_by_id(user_id: int) -> Optional[Dict[str, Any]]:
-        """Get user by ID (use service role client for server-side access)."""
-        from app.core.database import get_supabase_service_role
-        supabase = get_supabase_service_role()
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
-        return result.data[0] if result.data else None
-    
+        """Get user by ID"""
+        return await fetch_one("SELECT * FROM users WHERE id = $1", user_id)
+
     @staticmethod
     async def create_user(user_data: UserCreate) -> Dict[str, Any]:
         """Create a new user. Creates a workspace first and links the user to it."""
-        # Use Supabase service role client for admin operations (bypass RLS)
-        from app.core.database import get_supabase_service_role
-        supabase = get_supabase_service_role()
-        
-        # Check if user already exists (uses public users table via anon client)
         existing_user = await AuthService.get_user_by_email(user_data.email)
         if existing_user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email sudah terdaftar"
             )
-        
-        # Create workspace first using service role client
+
         workspace_name = f"{user_data.name or user_data.email.split('@')[0]}'s Workspace"
-        try:
-            workspace_result = supabase.table("workspace").insert({
-                "workspace_name": workspace_name
-            }).execute()
-        except Exception as e:
-            err = str(e)
-            # Provide actionable error message for common causes
-            if "Invalid API key" in err or "service_role" in err:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Supabase service role key tidak valid atau belum diatur. Pastikan SUPABASE_SERVICE_ROLE_KEY di `.env` benar."
-                )
-            if "row-level security" in err.lower():
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Gagal membuat workspace karena kebijakan RLS. Pastikan menggunakan service role key atau kebijakan RLS diatur untuk insert."
-                )
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Gagal membuat workspace: {err}"
-            )
-        
-        if not workspace_result.data:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Gagal membuat workspace"
-            )
-        workspace_id = workspace_result.data[0]["id"]
-        
-        # Hash password
         hashed_password = get_password_hash(user_data.password)
-        
-        # Create user with workspace_id (use service role to avoid RLS issues)
-        user_dict = {
-            "email": user_data.email,
-            "name": user_data.name,
-            "phone": user_data.phone,
-            "password": hashed_password,
-            "is_active": False,  # User needs to verify email first
-            "workspace_id": workspace_id
-        }
-        
-        result = supabase.table("users").insert(user_dict).execute()
-        
-        if not result.data:
-            # Rollback workspace if user creation failed
-            try:
-                supabase.table("workspace").delete().eq("id", workspace_id).execute()
-            except Exception:
-                pass
+
+        # Workspace and user are created together - the transaction rolls back
+        # both if either insert fails.
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                workspace_id = await conn.fetchval(
+                    "INSERT INTO workspace (workspace_name) VALUES ($1) RETURNING id",
+                    workspace_name
+                )
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO users (email, name, phone, password, is_active, workspace_id)
+                    VALUES ($1, $2, $3, $4, FALSE, $5)
+                    RETURNING *
+                    """,
+                    user_data.email, user_data.name, user_data.phone,
+                    hashed_password, workspace_id
+                )
+
+        if row is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Gagal membuat user"
             )
-        
-        return result.data[0]
+
+        return dict(row)
     
     @staticmethod
     async def authenticate_user(email: str, password: str) -> Optional[Dict[str, Any]]:
@@ -191,11 +150,9 @@ class AuthService:
                 detail="Kode OTP tidak valid atau sudah kedaluwarsa"
             )
         
-        # Activate user using service role client (bypass RLS)
-        from app.core.database import get_supabase_service_role
-        supabase = get_supabase_service_role()
-        supabase.table("users").update({"is_active": True}).eq("id", user["id"]).execute()
-        
+        # Activate user
+        await execute("UPDATE users SET is_active = TRUE WHERE id = $1", user["id"])
+
         # Create tokens
         access_token = create_access_token(
             data={"sub": str(user["id"]), "email": user["email"]}
@@ -293,11 +250,18 @@ class AuthService:
                 detail="Kode OTP tidak valid atau sudah kedaluwarsa"
             )
         
-        # Update password
+        # Update password - fail loudly if no row was written
         hashed_password = get_password_hash(new_password)
-        supabase = get_supabase()
-        supabase.table("users").update({"password": hashed_password}).eq("id", user["id"]).execute()
-        
+        updated = await fetch_one(
+            "UPDATE users SET password = $1 WHERE id = $2 RETURNING id",
+            hashed_password, user["id"]
+        )
+        if updated is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Gagal memperbarui password"
+            )
+
         return {
             "message": "Password berhasil direset"
         }

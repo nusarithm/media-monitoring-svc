@@ -1,6 +1,8 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from app.core.database import init_pool, close_pool
 from app.api.auth import router as auth_router
 from app.api.news import router as news_router
 from app.api.keywords import router as keywords_router
@@ -14,19 +16,28 @@ from app.core.config import settings
 import traceback
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Open the PostgreSQL pool on startup, close it on shutdown."""
+    await init_pool()
+    yield
+    await close_pool()
+
+
 # Create FastAPI app
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="API untuk sistem authentication dengan Supabase",
+    description="API untuk sistem authentication dengan PostgreSQL",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
-# CORS middleware
+# CORS middleware - exact origins, since allow_credentials rules out "*"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -90,5 +101,8 @@ if __name__ == "__main__":
         "main:app",
         host="0.0.0.0",
         port=8989,
-        reload=settings.DEBUG
+        reload=settings.DEBUG,
+        # Runs behind the Cloudflare tunnel, so trust its forwarded headers
+        proxy_headers=True,
+        forwarded_allow_ips="127.0.0.1"
     )

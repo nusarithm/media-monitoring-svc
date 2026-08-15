@@ -1,8 +1,8 @@
 import random
 import string
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
-from app.core.database import get_supabase, get_supabase_service_role
+from app.core.database import fetch_one, execute
 from app.core.config import settings
 
 
@@ -11,65 +11,57 @@ class OTPService:
     def generate_otp() -> str:
         """Generate a random OTP code"""
         return ''.join(random.choices(string.digits, k=settings.OTP_LENGTH))
-    
+
     @staticmethod
     async def create_otp(user_id: int, otp_code: str) -> Dict[str, Any]:
-        """Create OTP record in database (use service role client to bypass RLS)."""
-        supabase = get_supabase_service_role()
-        expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
-        
-        result = supabase.table("otp_codes").insert({
-            "user_id": user_id,
-            "otp_code": otp_code,
-            "expires_at": expires_at.isoformat(),
-            "is_used": False
-        }).execute()
-        
-        return result.data[0] if result.data else None
-    
+        """Create OTP record in database"""
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+
+        return await fetch_one(
+            """
+            INSERT INTO otp_codes (user_id, otp_code, expires_at, is_used)
+            VALUES ($1, $2, $3, FALSE)
+            RETURNING *
+            """,
+            user_id, otp_code, expires_at
+        )
+
     @staticmethod
     async def verify_otp(user_id: int, otp_code: str) -> bool:
         """Verify OTP code"""
-        # use service role client to bypass RLS when reading/updating OTPs
-        supabase = get_supabase_service_role()
-        
         # Get the latest unused OTP for this user
-        result = supabase.table("otp_codes")\
-            .select("*")\
-            .eq("user_id", user_id)\
-            .eq("otp_code", otp_code)\
-            .eq("is_used", False)\
-            .order("created_at", desc=True)\
-            .limit(1)\
-            .execute()
-        
-        if not result.data:
+        otp_record = await fetch_one(
+            """
+            SELECT * FROM otp_codes
+            WHERE user_id = $1 AND otp_code = $2 AND is_used = FALSE
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            user_id, otp_code
+        )
+
+        if otp_record is None:
             return False
-        
-        otp_record = result.data[0]
-        expires_at = datetime.fromisoformat(otp_record["expires_at"].replace("Z", "+00:00"))
-        
-        # Check if OTP is expired
-        if datetime.utcnow() > expires_at.replace(tzinfo=None):
+
+        # expires_at comes back as a timezone-aware datetime
+        if datetime.now(timezone.utc) > otp_record["expires_at"]:
             return False
-        
+
         # Mark OTP as used
-        supabase.table("otp_codes")\
-            .update({"is_used": True, "verified_at": datetime.utcnow().isoformat()})\
-            .eq("id", otp_record["id"])\
-            .execute()
-        
+        await execute(
+            "UPDATE otp_codes SET is_used = TRUE, verified_at = NOW() WHERE id = $1",
+            otp_record["id"]
+        )
+
         return True
-    
+
     @staticmethod
     async def invalidate_user_otps(user_id: int) -> None:
         """Invalidate all unused OTPs for a user"""
-        supabase = get_supabase_service_role()
-        supabase.table("otp_codes")\
-            .update({"is_used": True})\
-            .eq("user_id", user_id)\
-            .eq("is_used", False)\
-            .execute()
+        await execute(
+            "UPDATE otp_codes SET is_used = TRUE WHERE user_id = $1 AND is_used = FALSE",
+            user_id
+        )
 
 
 otp_service = OTPService()

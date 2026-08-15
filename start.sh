@@ -28,9 +28,9 @@ pip install -q -r requirements.txt
 
 echo ""
 echo "✅ Starting server..."
-echo "📡 API Documentation: http://localhost:8000/docs"
-echo "📡 Alternative Docs: http://localhost:8000/redoc"
-echo "📡 Health Check: http://localhost:8000/health"
+echo "📡 API Documentation: http://localhost:8989/docs"
+echo "📡 Alternative Docs: http://localhost:8989/redoc"
+echo "📡 Health Check: http://localhost:8989/health"
 echo ""
 echo "Press CTRL+C to stop the server"
 echo ""
