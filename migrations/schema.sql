@@ -105,6 +105,36 @@ COMMENT ON TABLE user_keywords IS 'Stores user monitoring keywords with AND/OR o
 
 
 -- ---------------------------------------------------------------------------
+-- payment_history (written by the Saweria payment webhook)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS payment_history (
+    id SERIAL PRIMARY KEY,
+    transaction_id TEXT UNIQUE NOT NULL,
+    payment_type TEXT,
+    workspace_id INTEGER NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+    subscription_tier VARCHAR(50) REFERENCES subscription_tiers(name),
+    billing_period VARCHAR(20) NOT NULL CHECK (billing_period IN ('monthly', 'yearly')),
+    amount_raw BIGINT,
+    amount_to_display BIGINT,
+    cut BIGINT,
+    transaction_fee_policy TEXT,
+    donator_name TEXT,
+    donator_email TEXT,
+    donator_is_user BOOLEAN,
+    message TEXT,
+    qr_string TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    webhook_payload JSONB,
+    payment_created_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_history_workspace ON payment_history(workspace_id, created_at DESC);
+
+COMMENT ON TABLE payment_history IS 'Payment records received from the Saweria webhook';
+
+
+-- ---------------------------------------------------------------------------
 -- workspace_subscription_info (read model for /subscription/* endpoints)
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW workspace_subscription_info AS
