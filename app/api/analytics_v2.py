@@ -80,7 +80,7 @@ def get_base_query(filters: AnalyticsFilter, search_keywords: List[str], keyword
     # Date range filter
     filter_clauses.append({
         "range": {
-            "extracted_at": {
+            "scraped_at": {
                 "gte": filters.date_from,
                 "lte": filters.date_to,
                 "format": "yyyy-MM-dd"
@@ -95,7 +95,7 @@ def get_base_query(filters: AnalyticsFilter, search_keywords: List[str], keyword
                 must_clauses.append({
                     "multi_match": {
                         "query": keyword,
-                        "fields": ["title^3", "description^2", "content"],
+                        "fields": ["title^3", "body"],
                         "type": "best_fields",
                         "operator": "or"
                     }
@@ -105,7 +105,7 @@ def get_base_query(filters: AnalyticsFilter, search_keywords: List[str], keyword
                 should_clauses.append({
                     "multi_match": {
                         "query": keyword,
-                        "fields": ["title^3", "description^2", "content"],
+                        "fields": ["title^3", "body"],
                         "type": "best_fields",
                         "operator": "or"
                     }
@@ -206,7 +206,7 @@ async def get_volume_trends(
                 "aggs": {
                     "volume_over_time": {
                         "date_histogram": {
-                            "field": "extracted_at",
+                            "field": "scraped_at",
                             "calendar_interval": es_interval,
                             "format": "yyyy-MM-dd"
                         }
@@ -251,7 +251,7 @@ async def get_ner_explorer(
             body={
                 "query": base_query,
                 "size": 1000,
-                "_source": ["title", "description", "content"]
+                "_source": ["title", "body"]
             }
         )
         
@@ -259,7 +259,7 @@ async def get_ner_explorer(
         
         for doc in result["hits"]["hits"]:
             source = doc["_source"]
-            text = f"{source.get('title', '')} {source.get('description', '')} {source.get('content', '')}"
+            text = f"{source.get('title', '')} {source.get('body', '')}"
             entities = extract_entities(text)
             for entity_type, entity_list in entities.items():
                 all_entities[entity_type].extend(entity_list)
@@ -311,7 +311,7 @@ async def get_top_sources(
                 "aggs": {
                     "top_sources": {
                         "terms": {
-                            "field": "source.keyword",
+                            "field": "source_name",
                             "size": 10
                         }
                     }
@@ -328,7 +328,7 @@ async def get_top_sources(
                 body={
                     "query": base_query,
                     "size": 0,
-                    "aggs": {"top_sources_alt": {"terms": {"field": "source", "size": 10}}}
+                    "aggs": {"top_sources_alt": {"terms": {"field": "source_name", "size": 10}}}
                 }
             )
             buckets = alt.get("aggregations", {}).get("top_sources_alt", {}).get("buckets", [])
@@ -341,7 +341,7 @@ async def get_top_sources(
                 body={
                     "query": base_query,
                     "size": 1000,
-                    "_source": ["source"]
+                    "_source": ["source_name", "source"]
                 }
             )
             hits = docs.get("hits", {}).get("hits", [])
@@ -565,14 +565,14 @@ async def get_trending_topics(
             body={
                 "query": base_query,
                 "size": 1000,
-                "_source": ["title", "description", "content"]
+                "_source": ["title", "body"]
             }
         )
         
         all_words = []
         for doc in result["hits"]["hits"]:
             source = doc["_source"]
-            text = f"{source.get('title', '')} {source.get('description', '')} {source.get('content', '')}"
+            text = f"{source.get('title', '')} {source.get('body', '')}"
             words = clean_and_tokenize(text)
             all_words.extend(words)
         
@@ -725,7 +725,7 @@ async def get_sentiment_time_series(
                 "aggs": {
                     "time_buckets": {
                         "date_histogram": {
-                            "field": "extracted_at",
+                            "field": "scraped_at",
                             "calendar_interval": es_interval,
                             "format": "yyyy-MM-dd"
                         },
@@ -786,7 +786,7 @@ async def get_entity_network(filters: AnalyticsFilter, current_user: dict = Depe
             body={
                 "query": base_query,
                 "size": 1000,
-                "_source": ["title", "description", "content", "annotate"]
+                "_source": ["title", "body"]
             }
         )
         print(f"[analytics_v2] entity-network: fetched {all_docs_result.get('hits', {}).get('total', {}).get('value', len(all_docs_result.get('hits', {}).get('hits', [])))} docs (requested 1000)")

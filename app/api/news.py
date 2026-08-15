@@ -22,7 +22,7 @@ async def get_sources(current_user: dict = Depends(get_current_active_user)):
             "aggs": {
                 "unique_sources": {
                     "terms": {
-                        "field": "source",
+                        "field": "source_name",
                         "size": 1000,
                         "order": {
                             "_key": "asc"
@@ -123,25 +123,25 @@ async def search_news(
             # Default: today
             date_to = datetime.now().strftime("%Y-%m-%d")
         
-        # Use publish_date_timestamp for date filtering (it's a date type)
+        # scraped_at is when the article entered the index
         filter_clauses.append({
             "range": {
-                "publish_date_timestamp": {
-                    "gte": date_from_stamp,
-                    "lte": date_to_stamp,
+                "scraped_at": {
+                    "gte": date_from,
+                    "lte": date_to,
                     "format": "yyyy-MM-dd"
                 }
             }
         })
-        
-        # Keywords filter - search in title and content
+
+        # Keywords filter - search in title and body
         if search_keywords and len(search_keywords) > 0:
             keyword_queries = []
             for keyword in search_keywords:
                 keyword_queries.append({
                     "multi_match": {
                         "query": keyword,
-                        "fields": ["title^2", "content"],
+                        "fields": ["title^2", "body"],
                         "type": "best_fields",
                         "operator": "or"
                     }
@@ -158,17 +158,16 @@ async def search_news(
         if filters.sources and len(filters.sources) > 0:
             filter_clauses.append({
                 "terms": {
-                    "source": filters.sources
+                    "source_name": filters.sources
                 }
             })
-        
+
         # Sentiment filter
+        # ponytail: the index carries no sentiment annotation yet, so this
+        # filter would match nothing. Re-enable once the annotation pipeline
+        # writes a sentiment field.
         if filters.sentiment:
-            filter_clauses.append({
-                "term": {
-                    "annotate.sentiment.label.keyword": filters.sentiment
-                }
-            })
+            pass
         
         # Calculate pagination
         from_index = (filters.page - 1) * filters.page_size
@@ -195,7 +194,7 @@ async def search_news(
                 "bool": query_body
             },
             "sort": [
-                {"publish_date_timestamp": {"order": "desc"}}
+                {"scraped_at": {"order": "desc"}}
             ],
             "from": from_index,
             "size": filters.page_size
@@ -217,42 +216,25 @@ async def search_news(
         
         for hit in result["hits"]["hits"]:
             source_data = hit["_source"]
-            
-            # Extract sentiment info
-            sentiment = None
-            sentiment_score = None
-            if "annotate" in source_data and "sentiment" in source_data["annotate"]:
-                sentiment = source_data["annotate"]["sentiment"].get("label")
-                sentiment_score = source_data["annotate"]["sentiment"].get("score")
-            
-            # Extract emotion info
-            emotion = None
-            emotion_score = None
-            if "annotate" in source_data and "emotion" in source_data["annotate"]:
-                emotion = source_data["annotate"]["emotion"].get("label")
-                emotion_score = source_data["annotate"]["emotion"].get("score")
-            
-            # Handle tags - convert string to list if needed
-            tags = source_data.get("tags")
-            if tags is not None and isinstance(tags, str):
-                tags = [tags]
-            
+
+            # source is an object ({name, base_url, tier}); source_name is the
+            # plain string the API exposes
+            source_obj = source_data.get("source")
+            source_name = source_data.get("source_name")
+            if not source_name and isinstance(source_obj, dict):
+                source_name = source_obj.get("name")
+
             article = NewsArticle(
                 id=hit["_id"],
                 title=source_data.get("title", ""),
-                content=source_data.get("content"),
-                source=source_data.get("source", ""),
+                content=source_data.get("body"),
+                source=source_name or "",
                 url=source_data.get("url", ""),
                 author=source_data.get("author"),
-                publish_date=source_data.get("publish_date"),
-                publish_date_timestamp=source_data.get("publish_date_timestamp"),
-                extracted_at=source_data.get("extracted_at"),
-                sentiment=sentiment,
-                sentiment_score=sentiment_score,
-                emotion=emotion,
-                emotion_score=emotion_score,
-                tags=tags,
-                headline_image=source_data.get("headline_image")
+                publish_date=source_data.get("published_at"),
+                extracted_at=source_data.get("scraped_at"),
+                headline_image=source_data.get("image_url"),
+                # sentiment, emotion and tags are not annotated in the index yet
             )
             items.append(article)
         

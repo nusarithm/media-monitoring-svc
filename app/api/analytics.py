@@ -94,7 +94,7 @@ async def get_analytics(
         # Date range filter
         filter_clauses.append({
             "range": {
-                "extracted_at": {
+                "scraped_at": {
                     "gte": filters.date_from,
                     "lte": filters.date_to,
                     "format": "yyyy-MM-dd"
@@ -109,7 +109,7 @@ async def get_analytics(
                 keyword_queries.append({
                     "multi_match": {
                         "query": keyword,
-                        "fields": ["title^2", "content"],
+                        "fields": ["title^2", "body"],
                         "type": "best_fields"
                     }
                 })
@@ -155,7 +155,7 @@ async def get_analytics(
                 # Time series
                 "time_series": {
                     "date_histogram": {
-                        "field": "extracted_at",
+                        "field": "scraped_at",
                         "calendar_interval": calendar_interval,
                         "format": "yyyy-MM-dd",
                         "min_doc_count": 0,
@@ -168,7 +168,7 @@ async def get_analytics(
                 # Sentiment time series
                 "sentiment_time_series": {
                     "date_histogram": {
-                        "field": "extracted_at",
+                        "field": "scraped_at",
                         "calendar_interval": calendar_interval,
                         "format": "yyyy-MM-dd",
                         "min_doc_count": 0
@@ -254,7 +254,7 @@ async def get_analytics(
                 "bool": query_body
             },
             "size": 1000,
-            "_source": ["title", "content"]
+            "_source": ["title", "body"]
         }
         
         docs_result = es_client.search(
@@ -268,7 +268,7 @@ async def get_analytics(
         
         for hit in docs_result["hits"]["hits"]:
             source = hit["_source"]
-            text = f"{source.get('title', '')} {source.get('content', '')}"
+            text = f"{source.get('title', '')} {source.get('body', '')}"
             all_text.append(text)
             all_emojis.extend(extract_emoji(text))
         
