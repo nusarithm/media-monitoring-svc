@@ -162,12 +162,14 @@ async def search_news(
                 }
             })
 
-        # Sentiment filter
-        # ponytail: the index carries no sentiment annotation yet, so this
-        # filter would match nothing. Re-enable once the annotation pipeline
-        # writes a sentiment field.
+        # Sentiment filter - the annotator writes positif/negatif/netral into
+        # annotate.sentiment.label, which is exactly what this filter accepts.
         if filters.sentiment:
-            pass
+            filter_clauses.append({
+                "term": {
+                    "annotate.sentiment.label.keyword": filters.sentiment
+                }
+            })
         
         # Calculate pagination
         from_index = (filters.page - 1) * filters.page_size
@@ -224,6 +226,13 @@ async def search_news(
             if not source_name and isinstance(source_obj, dict):
                 source_name = source_obj.get("name")
 
+            # Annotation written by the annotator pipeline. Documents it could
+            # not process carry {"error": ...} instead, and documents it has
+            # not reached yet carry nothing at all - both leave these None.
+            annotate = source_data.get("annotate") or {}
+            sentiment = annotate.get("sentiment") or {}
+            emotion = annotate.get("emotion") or {}
+
             article = NewsArticle(
                 id=hit["_id"],
                 title=source_data.get("title", ""),
@@ -234,7 +243,10 @@ async def search_news(
                 publish_date=source_data.get("published_at"),
                 extracted_at=source_data.get("scraped_at"),
                 headline_image=source_data.get("image_url"),
-                # sentiment, emotion and tags are not annotated in the index yet
+                sentiment=sentiment.get("label"),
+                sentiment_score=sentiment.get("score"),
+                emotion=emotion.get("label"),
+                emotion_score=emotion.get("score"),
             )
             items.append(article)
         
