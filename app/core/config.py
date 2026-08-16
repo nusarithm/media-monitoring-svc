@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     def cors_origins(self) -> List[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
+    # Alert sweep interval in minutes; 0 disables the background loop.
+    ALERT_SWEEP_MINUTES: int = 60
+
     # LLM gateway (OpenAI-compatible) used for narrative summaries.
     # Empty LLM_API_KEY disables the feature rather than breaking startup.
     LLM_BASE_URL: str = "https://omni.menglabs.id/v1"

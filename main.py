@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,11 +21,46 @@ from app.core.config import settings
 import traceback
 
 
+async def _alert_loop():
+    """Evaluate alert rules on an interval.
+
+    In-process rather than cron: the service runs from a tmux shell with no
+    systemd unit, so a crontab entry would be a second piece of state to
+    remember. This restarts with the app.
+
+    Single-process assumption: running several uvicorn workers would sweep
+    once per worker. The rule cooldown limits the damage to duplicate
+    evaluation, not duplicate mail, but move this to a real scheduler before
+    scaling out.
+    """
+    from app.services.alert_service import sweep
+
+    interval = settings.ALERT_SWEEP_MINUTES * 60
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            fired = [r for r in await sweep(send_email=True) if r["triggered"] and not r["cooldown"]]
+            if fired:
+                print(f"[alerts] {len(fired)} rule(s) fired")
+        except Exception as e:
+            # A failed sweep must not kill the loop - the next one may work.
+            print(f"[alerts] sweep failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Open the PostgreSQL pool on startup, close it on shutdown."""
     await init_pool()
+
+    task = None
+    if settings.ALERT_SWEEP_MINUTES > 0:
+        task = asyncio.create_task(_alert_loop())
+        print(f"[alerts] sweep every {settings.ALERT_SWEEP_MINUTES} min")
+
     yield
+
+    if task:
+        task.cancel()
     await close_pool()
 
 
