@@ -13,6 +13,9 @@ from app.api.subscription import router as subscription_router
 from app.api.email import router as email_router
 from app.api.payment import router as payment_router, webhook_router
 from app.api.reports import router as reports_router
+from app.api.topics import router as topics_router
+from app.api.entities import router as entities_router
+from app.api.alerts import router as alerts_router
 from app.core.config import settings
 import traceback
 
@@ -91,6 +94,9 @@ app.include_router(keywords_router)
 app.include_router(analytics_router)
 app.include_router(analytics_v2_router)
 app.include_router(reports_router)
+app.include_router(topics_router)
+app.include_router(entities_router)
+app.include_router(alerts_router)
 app.include_router(settings_router)
 app.include_router(subscription_router)
 app.include_router(email_router)

@@ -330,3 +330,99 @@ async def export_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+class NarrativeFilter(ReportFilter):
+    topic_id: Optional[int] = None
+    refresh: bool = Field(False, description="Ignore the cached summary and call the model again")
+
+
+class Narrative(BaseModel):
+    summary: str
+    model: Optional[str] = None
+    article_count: int
+    cached: bool
+
+
+@router.post("/narrative", response_model=Narrative)
+async def get_narrative(
+    filters: NarrativeFilter,
+    current_user: dict = Depends(get_current_active_user),
+):
+    """One-paragraph account of the period, written by the LLM gateway.
+
+    Cached per (user, topic, period): opening the page repeatedly must not
+    bill a model call each time, and the coverage for a past period does not
+    change once the pipeline has caught up.
+    """
+    from datetime import date as date_type
+
+    from app.core.database import fetch_one
+    from app.services import llm_service
+
+    def as_date(value: str):
+        return date_type.fromisoformat(value)
+
+    if not filters.refresh:
+        cached = await fetch_one(
+            """
+            SELECT summary, model, article_count FROM daily_summaries
+             WHERE user_id = $1 AND topic_id IS NOT DISTINCT FROM $2
+               AND date_from = $3 AND date_to = $4
+            """,
+            current_user["id"], filters.topic_id, as_date(filters.date_from), as_date(filters.date_to),
+        )
+        if cached:
+            return Narrative(summary=cached["summary"], model=cached["model"],
+                             article_count=cached["article_count"], cached=True)
+
+    try:
+        summary_data = await _summarise(filters, current_user["id"])
+        articles = await _fetch_articles(filters, current_user["id"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to gather articles: {str(e)}")
+
+    titles = [a.get("title", "") for a in articles if a.get("title")]
+    if not titles:
+        raise HTTPException(status_code=404, detail="Tidak ada artikel di periode ini")
+
+    try:
+        text = await llm_service.summarise(
+            period=f"{filters.date_from} s/d {filters.date_to}",
+            total=summary_data.total_articles,
+            sentiment={s.label: s.count for s in summary_data.sentiment},
+            titles=titles,
+        )
+    except llm_service.LLMNotConfigured:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="LLM belum dikonfigurasi: set LLM_API_KEY di .env",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM gateway error: {str(e)[:200]}")
+
+    await execute_sql(current_user["id"], filters, text, llm_service.model_name(), len(titles))
+    return Narrative(summary=text, model=llm_service.model_name(),
+                     article_count=len(titles), cached=False)
+
+
+async def execute_sql(user_id: int, filters: "NarrativeFilter", text: str,
+                      model: Optional[str], count: int) -> None:
+    """Upsert the cached summary; a refresh must overwrite, not collide."""
+    from datetime import date as date_type
+
+    from app.core.database import execute
+    await execute(
+        """
+        INSERT INTO daily_summaries (user_id, topic_id, date_from, date_to, summary, model, article_count)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (user_id, topic_id, date_from, date_to) DO UPDATE
+            SET summary = EXCLUDED.summary,
+                model = EXCLUDED.model,
+                article_count = EXCLUDED.article_count,
+                created_at = NOW()
+        """,
+        user_id, filters.topic_id,
+        date_type.fromisoformat(filters.date_from), date_type.fromisoformat(filters.date_to),
+        text, model, count,
+    )

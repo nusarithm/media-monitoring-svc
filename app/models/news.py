@@ -32,6 +32,9 @@ class NewsArticle(BaseModel):
     emotion_score: Optional[float] = None
     tags: Optional[List[str]] = None
     headline_image: Optional[str] = None
+    # Other outlets running the same story on this page of results
+    duplicates: Optional[int] = None
+    duplicate_sources: Optional[List[str]] = None
 
 
 class NewsResponse(BaseModel):

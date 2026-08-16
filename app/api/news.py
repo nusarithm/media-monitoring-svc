@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Optional, List
 from datetime import datetime, timedelta
 from app.models.news import NewsFilter, NewsArticle, NewsResponse, SourceResponse
+from app.core.dedup import cluster
 from app.core.elasticsearch import es_client
 from app.core.config import settings
 from app.api.dependencies import get_current_active_user
@@ -249,7 +250,23 @@ async def search_news(
                 emotion_score=emotion.get("score"),
             )
             items.append(article)
-        
+
+        # Fold syndicated re-runs into their first appearance. Scoped to this
+        # page: `total` still counts every copy, because paging is done by
+        # Elasticsearch and collapsing across pages would need the cluster key
+        # stored on the document, not computed here.
+        groups = cluster([{"title": i.title} for i in items])
+        kept = []
+        for idx, item in enumerate(items):
+            if idx not in groups:
+                continue  # folded into an earlier article
+            others = groups[idx]
+            if others:
+                item.duplicates = len(others)
+                item.duplicate_sources = sorted({items[o].source for o in others if items[o].source})
+            kept.append(item)
+        items = kept
+
         # Calculate total pages
         total_pages = (total + filters.page_size - 1) // filters.page_size
         
