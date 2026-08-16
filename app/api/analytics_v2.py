@@ -44,33 +44,6 @@ def clean_and_tokenize(text: str) -> List[str]:
     return words
 
 
-def extract_entities(text: str) -> Dict[str, List[str]]:
-    """Extract named entities (simplified version)"""
-    entities = {
-        'organizations': [],
-        'people': [],
-        'locations': []
-    }
-    
-    org_patterns = [r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*(?:\s+Inc\.?|\s+Corp\.?|\s+Ltd\.?|\s+LLC))\b']
-    name_patterns = [r'\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b']
-    loc_keywords = ['Jakarta', 'Surabaya', 'Bandung', 'Indonesia', 'Malaysia', 'Singapore', 
-                    'Thailand', 'Philippines', 'Vietnam', 'New York', 'London', 'Tokyo']
-    
-    for pattern in org_patterns:
-        entities['organizations'].extend(re.findall(pattern, text))
-    
-    for pattern in name_patterns:
-        matches = re.findall(pattern, text)
-        entities['people'].extend([m for m in matches if not any(org_word in m for org_word in ['Inc', 'Corp', 'Ltd', 'LLC'])])
-    
-    for loc in loc_keywords:
-        if loc in text:
-            entities['locations'].append(loc)
-    
-    return entities
-
-
 def get_base_query(filters: AnalyticsFilter, search_keywords: List[str], keyword_operator: str):
     """Build base Elasticsearch query"""
     must_clauses = []
@@ -246,24 +219,39 @@ async def get_ner_explorer(
         
         base_query = get_base_query(filters, search_keywords, keyword_operator)
         
+        # Only the annotations are needed, not the article bodies - pulling
+        # `body` for 1000 documents moved megabytes per request for nothing.
         result = es_client.search(
             index=settings.ELASTICSEARCH_INDEX,
             body={
                 "query": base_query,
                 "size": 1000,
-                "_source": ["title", "body"]
+                "_source": ["annotate.entities"]
             }
         )
-        
+
         all_entities = {"organizations": [], "people": [], "locations": []}
-        
+
+        # entity_group -> bucket. The NER model labels locations GPE rather
+        # than LOC; the rest are skipped (dates, numbers, products).
+        GROUPS = {
+            "PER": "people",
+            "ORG": "organizations", "NOR": "organizations", "ORGANIZATION": "organizations",
+            "LOC": "locations", "GPE": "locations",
+        }
+
+        # Pairing happens here, not in an aggregation: `annotate.entities` is a
+        # plain object array, so Elasticsearch flattens it and a terms agg on
+        # `word` filtered by `entity_group` would mix words across entities.
         for doc in result["hits"]["hits"]:
-            source = doc["_source"]
-            text = f"{source.get('title', '')} {source.get('body', '')}"
-            entities = extract_entities(text)
-            for entity_type, entity_list in entities.items():
-                all_entities[entity_type].extend(entity_list)
-        
+            annotate = doc["_source"].get("annotate") or {}
+            for ent in annotate.get("entities") or []:
+                bucket = GROUPS.get((ent.get("entity_group") or "").upper())
+                word = (ent.get("word") or "").strip()
+                if bucket and len(word) > 1:
+                    all_entities[bucket].append(word)
+
+
         org_counter = Counter(all_entities['organizations'])
         people_counter = Counter(all_entities['people'])
         loc_counter = Counter(all_entities['locations'])

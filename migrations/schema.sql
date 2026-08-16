@@ -167,3 +167,74 @@ SELECT
     END AS seconds_until_expiry
 FROM workspace w
 LEFT JOIN subscription_tiers st ON w.subscription_tier = st.name;
+
+
+-- ---------------------------------------------------------------------------
+-- topics - named keyword groups, so a user can compare "our brand" against
+-- "competitor" instead of monitoring one flat keyword list
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS topics (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    keywords TEXT[] NOT NULL,
+    operator VARCHAR(10) NOT NULL DEFAULT 'OR' CHECK (operator IN ('AND', 'OR')),
+    color VARCHAR(20),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topics_user_id ON topics(user_id);
+
+COMMENT ON TABLE topics IS 'Named keyword groups compared side by side on the Compare page';
+
+
+-- ---------------------------------------------------------------------------
+-- alert_rules - volume/negative-sentiment spike thresholds per user
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id BIGINT REFERENCES topics(id) ON DELETE CASCADE,
+    -- 'volume': today's article count vs the trailing average
+    -- 'negative': share of negative sentiment today
+    metric VARCHAR(20) NOT NULL CHECK (metric IN ('volume', 'negative')),
+    -- volume: multiple of the baseline (2.0 = double). negative: share 0..1
+    threshold NUMERIC(6,2) NOT NULL,
+    baseline_days INTEGER NOT NULL DEFAULT 7,
+    email_to VARCHAR(255),
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    -- set when the rule last fired, so one spike does not send hourly mail
+    last_fired_at TIMESTAMPTZ,
+    cooldown_hours INTEGER NOT NULL DEFAULT 12,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_rules_user_id ON alert_rules(user_id);
+CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON alert_rules(enabled) WHERE enabled;
+
+COMMENT ON TABLE alert_rules IS 'Spike thresholds evaluated by the alert sweep; emails via email_service';
+
+
+-- ---------------------------------------------------------------------------
+-- daily_summaries - cached LLM narrative, so opening the page does not call
+-- the model again for a period that has already been summarised
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS daily_summaries (
+    id BIGSERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id BIGINT REFERENCES topics(id) ON DELETE CASCADE,
+    date_from DATE NOT NULL,
+    date_to DATE NOT NULL,
+    summary TEXT NOT NULL,
+    model VARCHAR(100),
+    article_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, topic_id, date_from, date_to)
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_summaries_user ON daily_summaries(user_id, date_to DESC);
+
+COMMENT ON TABLE daily_summaries IS 'Cached LLM coverage summaries keyed by user, topic and period';

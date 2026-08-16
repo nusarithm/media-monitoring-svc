@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status, Depends, Query
 from typing import Optional, List
 from datetime import datetime, timedelta
 from app.models.news import NewsFilter, NewsArticle, NewsResponse, SourceResponse
+from app.core.dedup import cluster
 from app.core.elasticsearch import es_client
 from app.core.config import settings
 from app.api.dependencies import get_current_active_user
@@ -162,12 +163,14 @@ async def search_news(
                 }
             })
 
-        # Sentiment filter
-        # ponytail: the index carries no sentiment annotation yet, so this
-        # filter would match nothing. Re-enable once the annotation pipeline
-        # writes a sentiment field.
+        # Sentiment filter - the annotator writes positif/negatif/netral into
+        # annotate.sentiment.label, which is exactly what this filter accepts.
         if filters.sentiment:
-            pass
+            filter_clauses.append({
+                "term": {
+                    "annotate.sentiment.label.keyword": filters.sentiment
+                }
+            })
         
         # Calculate pagination
         from_index = (filters.page - 1) * filters.page_size
@@ -224,6 +227,13 @@ async def search_news(
             if not source_name and isinstance(source_obj, dict):
                 source_name = source_obj.get("name")
 
+            # Annotation written by the annotator pipeline. Documents it could
+            # not process carry {"error": ...} instead, and documents it has
+            # not reached yet carry nothing at all - both leave these None.
+            annotate = source_data.get("annotate") or {}
+            sentiment = annotate.get("sentiment") or {}
+            emotion = annotate.get("emotion") or {}
+
             article = NewsArticle(
                 id=hit["_id"],
                 title=source_data.get("title", ""),
@@ -234,10 +244,29 @@ async def search_news(
                 publish_date=source_data.get("published_at"),
                 extracted_at=source_data.get("scraped_at"),
                 headline_image=source_data.get("image_url"),
-                # sentiment, emotion and tags are not annotated in the index yet
+                sentiment=sentiment.get("label"),
+                sentiment_score=sentiment.get("score"),
+                emotion=emotion.get("label"),
+                emotion_score=emotion.get("score"),
             )
             items.append(article)
-        
+
+        # Fold syndicated re-runs into their first appearance. Scoped to this
+        # page: `total` still counts every copy, because paging is done by
+        # Elasticsearch and collapsing across pages would need the cluster key
+        # stored on the document, not computed here.
+        groups = cluster([{"title": i.title} for i in items])
+        kept = []
+        for idx, item in enumerate(items):
+            if idx not in groups:
+                continue  # folded into an earlier article
+            others = groups[idx]
+            if others:
+                item.duplicates = len(others)
+                item.duplicate_sources = sorted({items[o].source for o in others if items[o].source})
+            kept.append(item)
+        items = kept
+
         # Calculate total pages
         total_pages = (total + filters.page_size - 1) // filters.page_size
         

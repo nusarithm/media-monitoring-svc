@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,15 +13,54 @@ from app.api.settings import router as settings_router
 from app.api.subscription import router as subscription_router
 from app.api.email import router as email_router
 from app.api.payment import router as payment_router, webhook_router
+from app.api.reports import router as reports_router
+from app.api.topics import router as topics_router
+from app.api.entities import router as entities_router
+from app.api.alerts import router as alerts_router
 from app.core.config import settings
 import traceback
+
+
+async def _alert_loop():
+    """Evaluate alert rules on an interval.
+
+    In-process rather than cron: the service runs from a tmux shell with no
+    systemd unit, so a crontab entry would be a second piece of state to
+    remember. This restarts with the app.
+
+    Single-process assumption: running several uvicorn workers would sweep
+    once per worker. The rule cooldown limits the damage to duplicate
+    evaluation, not duplicate mail, but move this to a real scheduler before
+    scaling out.
+    """
+    from app.services.alert_service import sweep
+
+    interval = settings.ALERT_SWEEP_MINUTES * 60
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            fired = [r for r in await sweep(send_email=True) if r["triggered"] and not r["cooldown"]]
+            if fired:
+                print(f"[alerts] {len(fired)} rule(s) fired")
+        except Exception as e:
+            # A failed sweep must not kill the loop - the next one may work.
+            print(f"[alerts] sweep failed: {e}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Open the PostgreSQL pool on startup, close it on shutdown."""
     await init_pool()
+
+    task = None
+    if settings.ALERT_SWEEP_MINUTES > 0:
+        task = asyncio.create_task(_alert_loop())
+        print(f"[alerts] sweep every {settings.ALERT_SWEEP_MINUTES} min")
+
     yield
+
+    if task:
+        task.cancel()
     await close_pool()
 
 
@@ -89,6 +129,10 @@ app.include_router(news_router)
 app.include_router(keywords_router)
 app.include_router(analytics_router)
 app.include_router(analytics_v2_router)
+app.include_router(reports_router)
+app.include_router(topics_router)
+app.include_router(entities_router)
+app.include_router(alerts_router)
 app.include_router(settings_router)
 app.include_router(subscription_router)
 app.include_router(email_router)
