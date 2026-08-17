@@ -19,6 +19,7 @@ from app.api.entities import router as entities_router
 from app.api.alerts import router as alerts_router
 from app.api.sosmed_keywords import router as sosmed_keywords_router
 from app.api.sosmed import router as sosmed_router
+from app.api.insights import router as insights_router
 from app.core.config import settings
 import traceback
 
@@ -137,6 +138,7 @@ app.include_router(entities_router)
 app.include_router(alerts_router)
 app.include_router(sosmed_keywords_router)
 app.include_router(sosmed_router)
+app.include_router(insights_router)
 app.include_router(settings_router)
 app.include_router(subscription_router)
 app.include_router(email_router)

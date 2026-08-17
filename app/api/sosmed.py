@@ -8,13 +8,13 @@ have: likes, comments, reposts, quotes.
 from typing import List, Optional
 from urllib.parse import urlparse
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_current_active_user
 from app.core.elasticsearch import es_client
 from app.core.es_query import EMOTION_FIELD, SENTIMENT_FIELD
+from app.core.image_proxy import fetch_image
 
 router = APIRouter(prefix="/sosmed", tags=["Social Media"])
 
@@ -192,7 +192,6 @@ def _attach_profiles(posts: List[SosmedPost]) -> None:
 # without an allowlist this endpoint would be an open proxy: anyone able to
 # write a document could point it at an internal address.
 AVATAR_HOSTS = (".fbcdn.net", ".cdninstagram.com")
-AVATAR_MAX_BYTES = 2 * 1024 * 1024
 
 
 @router.get("/avatar/{username}")
@@ -218,24 +217,9 @@ async def avatar(username: str):
     if not url or not host.endswith(AVATAR_HOSTS):
         raise HTTPException(status_code=404, detail="Foto profil tidak tersedia")
 
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            upstream = await client.get(url)
-        upstream.raise_for_status()
-    except Exception:
-        # A stale CDN signature is normal; the caller falls back to initials.
-        raise HTTPException(status_code=404, detail="Foto profil tidak bisa diambil")
-
-    if len(upstream.content) > AVATAR_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="Foto profil terlalu besar")
-
-    return Response(
-        content=upstream.content,
-        media_type=upstream.headers.get("content-type", "image/jpeg"),
-        # These URLs are signed and expire; a day of caching keeps the feed
-        # snappy without pinning a picture that has already rotated.
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    # A stale CDN signature comes back as 404 here, and the card falls back to
+    # initials rather than leaving a hole.
+    return await fetch_image(url)
 
 
 @router.get("/profile/{username}", response_model=SosmedProfile)

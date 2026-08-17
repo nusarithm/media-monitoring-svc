@@ -268,3 +268,12 @@ COMMENT ON TABLE sosmed_keyword IS 'Search terms for the social media scraper (s
 
 INSERT INTO sosmed_keyword (keyword, platform) VALUES ('mrtjkt', 'threads')
     ON CONFLICT (platform, keyword) DO NOTHING;
+
+
+-- Insight caching reuses daily_summaries: same shape (text keyed by user and
+-- period), but keyed by what was asked rather than by topic.
+ALTER TABLE daily_summaries ADD COLUMN IF NOT EXISTS model_key VARCHAR(80);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_summaries_model_key
+    ON daily_summaries (user_id, model_key, date_from, date_to)
+    WHERE model_key IS NOT NULL;

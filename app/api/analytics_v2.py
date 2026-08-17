@@ -774,7 +774,10 @@ async def get_entity_network(filters: AnalyticsFilter, current_user: dict = Depe
             body={
                 "query": base_query,
                 "size": 1000,
-                "_source": ["title", "body"]
+                # The loop below reads annotate.entities; asking for title+body
+                # meant `annotate` was never in _source and the graph came back
+                # empty every time.
+                "_source": ["annotate.entities"]
             }
         )
         print(f"[analytics_v2] entity-network: fetched {all_docs_result.get('hits', {}).get('total', {}).get('value', len(all_docs_result.get('hits', {}).get('hits', [])))} docs (requested 1000)")
@@ -823,10 +826,6 @@ async def get_entity_network(filters: AnalyticsFilter, current_user: dict = Depe
                     # normalize pair ordering
                     a, b = (e1, e2) if e1 <= e2 else (e2, e1)
                     pair_counts[(a, b)] += 1
-
-            # Debug: sample entities for inspection
-            if doc_entities:
-                print(f"[analytics_v2] entity-network: doc {doc.get('_id')} entities: {doc_entities[:8]}")
 
         # Build nodes and edges
         nodes = []

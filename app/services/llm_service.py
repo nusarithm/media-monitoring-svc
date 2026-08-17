@@ -34,6 +34,31 @@ class LLMNotConfigured(RuntimeError):
     pass
 
 
+async def complete(prompt: str, max_tokens: int = 400) -> str:
+    """Single-turn completion. The prompt is built by the caller."""
+    if not API_KEY:
+        raise LLMNotConfigured("LLM_API_KEY is not set")
+
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        response = await client.post(
+            f"{BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                # Explicit: the gateway streams Server-Sent Events when `stream`
+                # is omitted, and response.json() then fails on the SSE body.
+                "stream": False,
+                "max_tokens": max_tokens,
+                "temperature": 0.3,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    return data["choices"][0]["message"]["content"].strip()
+
+
 async def summarise(period: str, total: int, sentiment: dict, titles: List[str]) -> str:
     if not API_KEY:
         raise LLMNotConfigured("LLM_API_KEY is not set")

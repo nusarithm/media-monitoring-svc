@@ -3,6 +3,7 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from app.models.news import NewsFilter, NewsArticle, NewsResponse, SourceResponse
 from app.core.dedup import cluster
+from app.core.image_proxy import fetch_image
 from app.core.elasticsearch import es_client
 from app.core.config import settings
 from app.api.dependencies import get_current_active_user
@@ -54,6 +55,28 @@ async def get_sources(current_user: dict = Depends(get_current_active_user)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to fetch sources: {str(e)}"
         )
+
+
+@router.get("/image/{doc_id}")
+async def news_image(doc_id: str):
+    """Proxy an article's headline image.
+
+    Unauthenticated for the same reason as the social avatar: an <img> tag
+    cannot send an Authorization header, and the picture is already public on
+    the publisher's site. The url is read from the document, never taken from
+    the caller.
+    """
+    try:
+        found = es_client.search(
+            index=settings.ELASTICSEARCH_INDEX,
+            body={"query": {"ids": {"values": [doc_id]}}, "size": 1, "_source": ["image_url"]},
+        )["hits"]["hits"]
+    except Exception:
+        raise HTTPException(status_code=502, detail="Elasticsearch tidak bisa dihubungi")
+
+    if not found:
+        raise HTTPException(status_code=404, detail="Artikel tidak ditemukan")
+    return await fetch_image(found[0]["_source"].get("image_url") or "")
 
 
 @router.post("/search", response_model=NewsResponse)
