@@ -18,17 +18,31 @@ from app.core.image_proxy import fetch_image
 
 router = APIRouter(prefix="/sosmed", tags=["Social Media"])
 
-POSTS_INDEX = "threads_posts"
-PROFILES_INDEX = "threads_profiles"
+# One index per platform. The feed unifies them: "all" (the default) searches
+# every source at once and each post carries its `source`, so the UI shows one
+# stream even as more platforms land. Add a platform by adding a line here — the
+# scrapers already write the shared field names (likes/comments/reposts/quotes).
+POST_INDICES = {"threads": "threads_posts", "x": "x_posts"}
+PROFILE_INDICES = {"threads": "threads_profiles", "x": "x_profiles"}
 
-# The scraper writes one index per platform; only Threads exists so far.
-PLATFORM_INDEX = {"threads": POSTS_INDEX}
+ALL_POSTS = ",".join(POST_INDICES.values())
+ALL_PROFILES = ",".join(PROFILE_INDICES.values())
+
+# Kept for the single-source profile lookups below.
+POSTS_INDEX = ALL_POSTS
+PROFILES_INDEX = ALL_PROFILES
+
+
+def _source_of(index: str) -> str:
+    """`x_posts` -> `x`, `threads_profiles` -> `threads`. Source of a hit is
+    just the index it came from, so nothing needs to be stored per document."""
+    return index.split("_", 1)[0]
 
 
 class SosmedFilter(BaseModel):
     date_from: Optional[str] = None
     date_to: Optional[str] = None
-    platform: str = "threads"
+    platform: str = "all"
     keywords: Optional[List[str]] = Field(None, description="Scraper keywords to include")
     authors: Optional[List[str]] = None
     sentiment: Optional[str] = None
@@ -39,6 +53,7 @@ class SosmedFilter(BaseModel):
 
 class SosmedPost(BaseModel):
     id: str
+    source: str = "threads"  # which platform this post came from (drives the card logo)
     code: Optional[str] = None
     url: Optional[str] = None
     author: Optional[str] = None
@@ -50,6 +65,9 @@ class SosmedPost(BaseModel):
     comments: int = 0
     reposts: int = 0
     quotes: int = 0
+    # X exposes these; Threads does not. Absent -> None, the card just hides them.
+    views: Optional[int] = None
+    bookmarks: Optional[int] = None
     sentiment: Optional[str] = None
     sentiment_score: Optional[float] = None
     emotion: Optional[str] = None
@@ -100,11 +118,14 @@ class SosmedAnalytics(BaseModel):
 
 
 def _index_for(platform: str) -> str:
-    index = PLATFORM_INDEX.get((platform or "").lower())
+    p = (platform or "all").lower()
+    if p in ("all", "sosmed"):
+        return ALL_POSTS
+    index = POST_INDICES.get(p)
     if not index:
         raise HTTPException(
             status_code=422,
-            detail=f"platform belum didukung: {', '.join(PLATFORM_INDEX)}",
+            detail=f"platform belum didukung: all, {', '.join(POST_INDICES)}",
         )
     return index
 
@@ -142,6 +163,7 @@ def _to_post(hit: dict) -> SosmedPost:
     emotion = annotate.get("emotion") or {}
     return SosmedPost(
         id=hit["_id"],
+        source=_source_of(hit["_index"]),
         code=src.get("code"),
         url=src.get("url"),
         author=src.get("author"),
@@ -153,6 +175,8 @@ def _to_post(hit: dict) -> SosmedPost:
         comments=src.get("comments") or 0,
         reposts=src.get("reposts") or 0,
         quotes=src.get("quotes") or 0,
+        views=src.get("views"),
+        bookmarks=src.get("bookmarks"),
         sentiment=sentiment.get("label"),
         sentiment_score=sentiment.get("score"),
         emotion=emotion.get("label"),
@@ -191,7 +215,7 @@ def _attach_profiles(posts: List[SosmedPost]) -> None:
 # Only these hosts may be fetched. The URL comes out of Elasticsearch, so
 # without an allowlist this endpoint would be an open proxy: anyone able to
 # write a document could point it at an internal address.
-AVATAR_HOSTS = (".fbcdn.net", ".cdninstagram.com")
+AVATAR_HOSTS = (".fbcdn.net", ".cdninstagram.com", ".twimg.com")
 
 
 @router.get("/avatar/{username}")
