@@ -238,3 +238,33 @@ CREATE TABLE IF NOT EXISTS daily_summaries (
 CREATE INDEX IF NOT EXISTS idx_daily_summaries_user ON daily_summaries(user_id, date_to DESC);
 
 COMMENT ON TABLE daily_summaries IS 'Cached LLM coverage summaries keyed by user, topic and period';
+
+
+-- ---------------------------------------------------------------------------
+-- sosmed_keyword - keywords the social scraper searches for.
+--
+-- System-wide, not per user: the scraper collects for everyone the way the
+-- news scraper does, and each user still narrows it down with their own
+-- `user_keywords`. Underscored, not "sosmed-keyword": a hyphen would force
+-- every query to quote the identifier.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sosmed_keyword (
+    id BIGSERIAL PRIMARY KEY,
+    keyword VARCHAR(200) NOT NULL,
+    platform VARCHAR(30) NOT NULL DEFAULT 'threads',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    -- Written by the scraper after a run, so a scheduler can pick the
+    -- least recently scraped keyword instead of always starting at the top.
+    last_scraped_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (platform, keyword)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sosmed_keyword_enabled
+    ON sosmed_keyword (platform, last_scraped_at NULLS FIRST) WHERE enabled;
+
+COMMENT ON TABLE sosmed_keyword IS 'Search terms for the social media scraper (sosmed-scraper)';
+
+INSERT INTO sosmed_keyword (keyword, platform) VALUES ('mrtjkt', 'threads')
+    ON CONFLICT (platform, keyword) DO NOTHING;
