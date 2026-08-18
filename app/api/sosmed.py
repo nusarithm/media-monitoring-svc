@@ -25,12 +25,21 @@ router = APIRouter(prefix="/sosmed", tags=["Social Media"])
 POST_INDICES = {"threads": "threads_posts", "x": "x_posts"}
 PROFILE_INDICES = {"threads": "threads_profiles", "x": "x_profiles"}
 
+# Comments live in their own indices; nothing in the document says which it is,
+# so the index name is the identifier.
+COMMENT_INDICES = {"threads": "threads_comments", "x": "x_comments"}
+
 ALL_POSTS = ",".join(POST_INDICES.values())
 ALL_PROFILES = ",".join(PROFILE_INDICES.values())
 
 # Kept for the single-source profile lookups below.
 POSTS_INDEX = ALL_POSTS
 PROFILES_INDEX = ALL_PROFILES
+
+
+def _kind_of(index: str) -> str:
+    """`threads_comments` -> `comment`, `x_posts` -> `post`."""
+    return "comment" if index.endswith("_comments") else "post"
 
 
 def _source_of(index: str) -> str:
@@ -49,11 +58,20 @@ class SosmedFilter(BaseModel):
     page: int = Field(1, ge=1)
     page_size: int = Field(12, ge=1, le=100)
     sort: str = Field("recent", pattern="^(recent|engagement)$")
+    # Comments are a different corpus, not a variation of posts: they are far
+    # more numerous and, for now, unannotated. Opt in rather than mixing by
+    # default.
+    content_type: str = Field("post", pattern="^(post|comment|all)$")
 
 
 class SosmedPost(BaseModel):
     id: str
     source: str = "threads"  # which platform this post came from (drives the card logo)
+    # post or comment. Not stored on the document - derived from the index,
+    # which is the only thing that distinguishes the two.
+    type: str = "post"
+    # Set on comments: the post this one replies to.
+    parent_id: Optional[str] = None
     code: Optional[str] = None
     url: Optional[str] = None
     author: Optional[str] = None
@@ -117,17 +135,24 @@ class SosmedAnalytics(BaseModel):
     top_posts: List[SosmedPost]
 
 
-def _index_for(platform: str) -> str:
+def _index_for(platform: str, content_type: str = "post") -> str:
     p = (platform or "all").lower()
+    maps = {
+        "post": [POST_INDICES],
+        "comment": [COMMENT_INDICES],
+        "all": [POST_INDICES, COMMENT_INDICES],
+    }[content_type or "post"]
+
     if p in ("all", "sosmed"):
-        return ALL_POSTS
-    index = POST_INDICES.get(p)
-    if not index:
+        return ",".join(i for m in maps for i in m.values())
+
+    picked = [m[p] for m in maps if p in m]
+    if not picked:
         raise HTTPException(
             status_code=422,
             detail=f"platform belum didukung: all, {', '.join(POST_INDICES)}",
         )
-    return index
+    return ",".join(picked)
 
 
 def _query(filters: SosmedFilter) -> dict:
@@ -164,6 +189,8 @@ def _to_post(hit: dict) -> SosmedPost:
     return SosmedPost(
         id=hit["_id"],
         source=_source_of(hit["_index"]),
+        type=_kind_of(hit["_index"]),
+        parent_id=src.get("post_code") or src.get("post_id"),
         code=src.get("code"),
         url=src.get("url"),
         author=src.get("author"),
@@ -300,7 +327,7 @@ async def get_profile(username: str, current_user: dict = Depends(get_current_ac
 @router.post("/search", response_model=SosmedResponse)
 async def search_posts(filters: SosmedFilter, current_user: dict = Depends(get_current_active_user)):
     """Paginated post feed, newest first or most engaged first."""
-    index = _index_for(filters.platform)
+    index = _index_for(filters.platform, filters.content_type)
     sort = (
         [{"taken_at": {"order": "desc"}}]
         if filters.sort == "recent"
@@ -338,7 +365,7 @@ async def search_posts(filters: SosmedFilter, current_user: dict = Depends(get_c
 @router.post("/analytics", response_model=SosmedAnalytics)
 async def sosmed_analytics(filters: SosmedFilter, current_user: dict = Depends(get_current_active_user)):
     """Volume, sentiment, engagement and who is driving it."""
-    index = _index_for(filters.platform)
+    index = _index_for(filters.platform, filters.content_type)
     query = _query(filters)
 
     try:

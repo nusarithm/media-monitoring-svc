@@ -43,11 +43,8 @@ class GraphAnalysisRequest(BaseModel):
 class DashboardAnalysisRequest(BaseModel):
     date_from: str
     date_to: str
-    total_articles: int = 0
-    sentiment: dict = Field(default_factory=dict)
-    emotion: dict = Field(default_factory=dict)
-    top_sources: List[dict] = Field(default_factory=list)
-    top_entities: List[dict] = Field(default_factory=list)
+    sources: Optional[List[str]] = None
+    sentiment: Optional[str] = None
     refresh: bool = False
 
 
@@ -153,16 +150,49 @@ async def analyse_graph(body: GraphAnalysisRequest, current_user: dict = Depends
 
 @router.post("/dashboard", response_model=Insight)
 async def analyse_dashboard(body: DashboardAnalysisRequest, current_user: dict = Depends(get_current_active_user)):
-    """Plain-language reading of the dashboard numbers."""
+    """Plain-language reading of the dashboard numbers.
+
+    The figures are computed here rather than sent by the browser. The page had
+    only its article count and the source filter to hand, so the model was
+    asked to explain a period it was told nothing about - "Sentimen: belum ada"
+    - and answered accordingly. This runs the same aggregation the report page
+    uses, so the prose describes real numbers.
+    """
+    from app.api.reports import ReportFilter, _summarise
+
+    try:
+        summary = await _summarise(
+            ReportFilter(
+                date_from=body.date_from,
+                date_to=body.date_to,
+                sources=body.sources,
+                sentiment=body.sentiment,
+            ),
+            current_user["id"],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal mengambil angka: {str(e)}")
+
+    if summary.total_articles == 0:
+        raise HTTPException(status_code=404, detail="Tidak ada artikel di periode ini")
+
+    entities = (summary.people + summary.organizations + summary.locations)
+    entities.sort(key=lambda e: -e.count)
+
     prompt = DASHBOARD_PROMPT.format(
         period=f"{body.date_from} s/d {body.date_to}",
-        total=body.total_articles,
-        sentiment=", ".join(f"{k} {v}" for k, v in body.sentiment.items()) or "belum ada",
-        emotion=", ".join(f"{k} {v}" for k, v in body.emotion.items()) or "belum ada",
-        sources=", ".join(str(s.get("name")) for s in body.top_sources[:8]) or "-",
-        entities=", ".join(str(e.get("name")) for e in body.top_entities[:10]) or "-",
+        total=f"{summary.total_articles} ({summary.annotated_articles} sudah dianotasi)",
+        sentiment=", ".join(f"{s.label} {s.count}" for s in summary.sentiment) or "belum ada",
+        emotion=", ".join(f"{e.label} {e.count}" for e in summary.emotion) or "belum ada",
+        sources=", ".join(f"{s.name} {s.count}" for s in summary.top_sources[:8]) or "-",
+        entities=", ".join(f"{e.name} {e.count}" for e in entities[:12]) or "-",
     )
     payload = json.dumps(
-        {"t": body.total_articles, "s": body.sentiment, "e": body.emotion}, sort_keys=True
+        {
+            "t": summary.total_articles,
+            "s": {s.label: s.count for s in summary.sentiment},
+            "src": [s.name for s in summary.top_sources[:8]],
+        },
+        sort_keys=True,
     )
     return await _cached(current_user["id"], "dashboard", payload, body.date_from, body.date_to, prompt, body.refresh)
