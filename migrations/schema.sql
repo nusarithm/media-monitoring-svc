@@ -277,3 +277,16 @@ ALTER TABLE daily_summaries ADD COLUMN IF NOT EXISTS model_key VARCHAR(80);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_summaries_model_key
     ON daily_summaries (user_id, model_key, date_from, date_to)
     WHERE model_key IS NOT NULL;
+
+
+-- Soft delete for scraper keywords: removing one from the dashboard should not
+-- destroy the record of what was monitored, and last_scraped_at is worth
+-- keeping if the keyword comes back.
+ALTER TABLE sosmed_keyword ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- The UNIQUE(platform, keyword) constraint still covers deleted rows, so
+-- re-adding a deleted keyword conflicts. Callers resurrect on conflict rather
+-- than inserting a duplicate.
+CREATE INDEX IF NOT EXISTS idx_sosmed_keyword_live
+    ON sosmed_keyword (platform, last_scraped_at NULLS FIRST)
+    WHERE enabled AND deleted_at IS NULL;
